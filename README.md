@@ -8,3 +8,7 @@ some improvement:
 
 From my point of view, weight of last linear layer = features of each class, bias is a kind of statistic that counts the probability of occurrence of various types
 So, I opt to keep bias.
+
+
+
+domainT3A is a improvement of T3A proposed by me, which use domain label when predict
