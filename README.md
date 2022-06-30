@@ -11,5 +11,11 @@ So, I opt to keep bias.
 
 
 
+
+
+
+
+
 domainT3A is a improvement of T3A proposed by me, which use domain label when predict
+
 P(y|x) = P(y|x,D)*P(D|x)
