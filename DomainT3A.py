@@ -12,7 +12,8 @@ import torch.nn.functional as F
 
 
 class T3A(nn.Module):
-    def __init__(self, last_layer: nn.Linear, k=0, num_domain=6, num_classes=60, in_dim=864):
+    def __init__(self, last_layer: nn.Linear, k=0, num_domain=6, num_classes=60, in_dim=864,
+                 bias=False):
         '''
 
         :param last_layer:
@@ -27,6 +28,7 @@ class T3A(nn.Module):
         self.supports_label = {}
         self.num_domain = num_domain
         self.num_classes = num_classes
+        self.bias = bias
 
         # each domain is a list
         for i in range(num_domain):
@@ -47,6 +49,7 @@ class T3A(nn.Module):
         :param use_T3A: whether use T3A to predict or use nn.Linear to predict
         :return: predict N, num_classes
         '''
+        x = x.squeeze()
         if adapt and domain_label is not None:
             self.update_supports(x, domain_label)
         if not use_T3A and self.training:
@@ -60,10 +63,14 @@ class T3A(nn.Module):
             weight = self.get_supports().permute(1, 0)  # D, num_classes
         else:
             weight = self.geted_supports
-        bias = self.last_layer.bias.data
+
         # num_domain , num_classes , D
         weight = weight.permute(0, 2, 1)  # num_domain , D , num_classes
-        logits = x @ weight + bias  # num_domain, N, num_classes
+        if self.bias:
+            bias = self.last_layer.bias.data
+            logits = x @ weight + bias  # num_domain, N, num_classes
+        else:
+            logits = x @ weight
         logits = logits.permute(1, 2, 0)  # N, num_clases, num_domain
         domain_prob = torch.softmax(self.domain_classifier(x), dim=1).unsqueeze(2)  # N,num_domain, 1
         logits = torch.bmm(logits, domain_prob).squeeze()
@@ -83,12 +90,13 @@ class T3A(nn.Module):
             # in each iteration, get a (num_classes, D) tensor into weight.
             # and finally use torch.cat to get return tensor
             now_weight = []
-            now_domain_support = torch.cat(self.supports[domain], dim=0)  # N, D
+            now_domain_support = torch.stack(self.supports[domain])  # N, D
             # N
             now_domain_support_label = torch.tensor(self.supports_label[domain], device=self.device)
             # N
             now_domain_support_entropy = torch.tensor(self.supports_entropy[domain], device=self.device)
             for now_class in range(self.num_classes):
+                # print(now_domain_support.shape, now_domain_support_label.shape, now_domain_support_entropy.shape)
                 class_mask = now_domain_support_label == now_class
                 all = now_domain_support[class_mask, :]
                 if k <= 0:
@@ -97,11 +105,14 @@ class T3A(nn.Module):
                     all_entropy = now_domain_support_entropy[class_mask]
                     _, indices = torch.sort(all_entropy, dim=0, descending=False)  # from small to big
                     all = all[indices, :]
-                    all = all[torch.arange(k - 1), :]
+                    if all.shape[0] <= k:
+                        pass
+                    else:
+                        all = all[torch.arange(k - 1), :]
 
                 now_weight.append(all.mean(0))
 
-            now_weight = torch.cat(now_weight, dim=0)  # num_classes, D
+            now_weight = torch.stack(now_weight)  # num_classes, D
             weight.append(now_weight)
 
         weight = torch.stack(weight)
@@ -116,15 +127,15 @@ class T3A(nn.Module):
         :param domain_label: N,
         :return:
         '''
-        pre = self.last_layer(x)  # N, D
-        entropy = self.compute_entropy(pre)
+        pre = self.last_layer(x)  # N, num_classes
+        entropy = self.compute_entropy(pre) # N
 
         for i in range(pre.shape[0]):
             now_domain = domain_label[i].item()
             _, now_pre = torch.max(pre, dim=1)
-            self.supports[now_domain].append(pre[i])
+            self.supports[now_domain].append(x[i])
             self.supports_entropy[now_domain].append(entropy[i].item())
-            self.supports_label[now_domain].append(now_pre.item())
+            self.supports_label[now_domain].append(now_pre[i].item())
 
     @staticmethod
     def compute_entropy(x: torch.tensor) -> torch.tensor:
@@ -135,5 +146,15 @@ class T3A(nn.Module):
         '''
         return - (F.softmax(x, dim=1) * F.log_softmax(x, dim=1)).sum(1)
 
+    def save_supports(self):
+        torch.save(self.domain_classifier.state_dict(), 'domain_classifier.pth')
+        torch.save(self.supports, 'supports.pth')
+        torch.save(self.supports_entropy, 'supports_entropy.pth')
+        torch.save(self.supports_label, 'supports_label.pth')
 
-
+    def load_supports(self):
+        self.domain_classifier.load_state_dict(torch.load('domain_classifier.pth'))
+        self.supports = torch.load('supports.pth')
+        self.supports_label = torch.load('supports_label.pth')
+        self.supports_entropy = torch.load('supports_entropy.pth')
+        #print(self.supports)
